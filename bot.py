@@ -341,7 +341,8 @@ async def msg_income_save(message: Message, state: FSMContext) -> None:
     category = data["category"]
     size     = data["size"]
 
-    storage.add_income(message.from_user.id, category, size, qty)
+    storage.add_income(message.from_user.id, category, size, qty,
+                       by_name=message.from_user.first_name or "")
     await state.clear()
 
     label = CATEGORY_LABELS_TITLE.get(category, category)
@@ -403,7 +404,8 @@ async def msg_expense_process(message: Message, state: FSMContext) -> None:
         return
 
     # ── Списание ──────────────────────────────────────────────────────────────
-    result = storage.add_expense_cake(message.from_user.id, diameter, package_size)
+    result = storage.add_expense_cake(message.from_user.id, diameter, package_size,
+                                      by_name=message.from_user.first_name or "")
     await state.clear()
 
     if not result["ok"]:
@@ -493,7 +495,8 @@ async def msg_remove_save(message: Message, state: FSMContext) -> None:
     category = data["category"]
     size     = data["size"]
 
-    result = storage.remove_manual(message.from_user.id, category, size, qty)
+    result = storage.remove_manual(message.from_user.id, category, size, qty,
+                                   by_name=message.from_user.first_name or "")
     await state.clear()
 
     if not result["ok"]:
@@ -541,7 +544,8 @@ async def cb_expense_cupcake_start(callback: CallbackQuery, state: FSMContext) -
 async def cb_expense_cupcake_confirm(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     box_size = callback.data.split(":", 1)[1]
-    result = storage.add_expense_cupcake(callback.from_user.id, box_size)
+    result = storage.add_expense_cupcake(callback.from_user.id, box_size,
+                                         by_name=callback.from_user.first_name or "")
     await state.clear()
 
     if not result["ok"]:

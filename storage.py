@@ -2,7 +2,7 @@ import json
 import os
 from datetime import datetime
 
-from config import DATA_DIR, SUPPLY_DIAMETERS, PACKAGE_SIZES, CUPCAKE_BOX_SIZES, LOW_STOCK_THRESHOLDS
+from config import SHARED_STOCK_FILE, SUPPLY_DIAMETERS, PACKAGE_SIZES, CUPCAKE_BOX_SIZES, LOW_STOCK_THRESHOLDS
 
 # ─── Категории для отображения ────────────────────────────────────────────────
 CATEGORY_NAMES = {
@@ -11,10 +11,6 @@ CATEGORY_NAMES = {
     "packages":     "Пакет",
     "cupcake_boxes": "Коробка капкейк/трайфл",
 }
-
-
-def _get_path(user_id: int) -> str:
-    return os.path.join(DATA_DIR, f"{user_id}.json")
 
 
 def _default_data() -> dict:
@@ -29,18 +25,44 @@ def _default_data() -> dict:
     }
 
 
-def load(user_id: int) -> dict:
-    path = _get_path(user_id)
-    if not os.path.exists(path):
+def load() -> dict:
+    if not os.path.exists(SHARED_STOCK_FILE):
         return _default_data()
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    with open(SHARED_STOCK_FILE, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    stock = data.setdefault("stock", {})
+
+    # Подложки и коробки (торт) — синхронизация диаметров из конфига
+    for cat in ("substrates", "boxes"):
+        cat_stock = stock.setdefault(cat, {})
+        expected  = {str(d) for d in SUPPLY_DIAMETERS}
+        for d in expected:
+            cat_stock.setdefault(d, 0)
+        for d in [k for k in cat_stock if k not in expected]:
+            del cat_stock[d]
+
+    # Пакеты
+    pkg = stock.setdefault("packages", {})
+    for s in PACKAGE_SIZES:
+        pkg.setdefault(s, 0)
+    for s in [k for k in pkg if k not in PACKAGE_SIZES]:
+        del pkg[s]
+
+    # Коробки капкейк/трайфл
+    cpk = stock.setdefault("cupcake_boxes", {})
+    for s in CUPCAKE_BOX_SIZES:
+        cpk.setdefault(s, 0)
+    for s in [k for k in cpk if k not in CUPCAKE_BOX_SIZES]:
+        del cpk[s]
+
+    data.setdefault("history", [])
+    return data
 
 
-def _save(user_id: int, data: dict) -> None:
-    os.makedirs(DATA_DIR, exist_ok=True)
-    path = _get_path(user_id)
-    with open(path, "w", encoding="utf-8") as f:
+def _save(data: dict) -> None:
+    os.makedirs(os.path.dirname(SHARED_STOCK_FILE), exist_ok=True)
+    with open(SHARED_STOCK_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
@@ -50,35 +72,25 @@ def _now() -> str:
 
 # ─── Приход ───────────────────────────────────────────────────────────────────
 
-def add_income(user_id: int, category: str, size: str, qty: int) -> None:
-    """
-    Добавить qty единиц расходника в категорию category (substrates / boxes / packages).
-    """
-    data = load(user_id)
+def add_income(user_id: int, category: str, size: str, qty: int, by_name: str = "") -> None:
+    data = load()
     stock = data["stock"][category]
     stock[size] = stock.get(size, 0) + qty
     data["history"].append({
         "date":     _now(),
+        "by":       by_name,
         "type":     "income",
         "category": category,
         "size":     size,
         "qty":      qty,
     })
-    _save(user_id, data)
+    _save(data)
 
 
 # ─── Расход (торт) ────────────────────────────────────────────────────────────
 
-def add_expense_cake(user_id: int, diameter: int, package_size: str) -> dict:
-    """
-    Списать 1 подложку диаметра diameter, 1 коробку диаметра diameter,
-    1 пакет размера package_size.
-
-    Возвращает:
-        {"ok": True}                           — успех
-        {"ok": False, "shortages": [...]}      — не хватает позиций
-    """
-    data = load(user_id)
+def add_expense_cake(user_id: int, diameter: int, package_size: str, by_name: str = "") -> dict:
+    data = load()
     stock = data["stock"]
     d = str(diameter)
 
@@ -99,6 +111,7 @@ def add_expense_cake(user_id: int, diameter: int, package_size: str) -> dict:
 
     data["history"].append({
         "date":          _now(),
+        "by":            by_name,
         "type":          "expense",
         "cake_diameter": diameter,
         "items": [
@@ -107,17 +120,14 @@ def add_expense_cake(user_id: int, diameter: int, package_size: str) -> dict:
             {"category": "packages",   "size": package_size, "qty": 1},
         ],
     })
-    _save(user_id, data)
+    _save(data)
     return {"ok": True}
 
 
-# ─── Расход (капкейки/трайфлы) ───────────────────────────────────────────────────
+# ─── Расход (капкейки/трайфлы) ───────────────────────────────────────────────
 
-def add_expense_cupcake(user_id: int, box_size: str) -> dict:
-    """
-    Списать 1 коробку для капкейков/трайфлов соответствующего размера.
-    """
-    data = load(user_id)
+def add_expense_cupcake(user_id: int, box_size: str, by_name: str = "") -> dict:
+    data = load()
     stock = data["stock"]["cupcake_boxes"]
     available = stock.get(box_size, 0)
 
@@ -127,21 +137,18 @@ def add_expense_cupcake(user_id: int, box_size: str) -> dict:
     stock[box_size] -= 1
     data["history"].append({
         "date":     _now(),
+        "by":       by_name,
         "type":     "expense_cupcake",
         "box_size": box_size,
     })
-    _save(user_id, data)
+    _save(data)
     return {"ok": True}
 
 
 # ─── Ручное удаление ─────────────────────────────────────────────────────────
 
-def remove_manual(user_id: int, category: str, size: str, qty: int) -> dict:
-    """
-    Вручную убрать qty единиц из категории category.
-    Возвращает {"ok": True} или {"ok": False, "available": N}.
-    """
-    data = load(user_id)
+def remove_manual(user_id: int, category: str, size: str, qty: int, by_name: str = "") -> dict:
+    data = load()
     stock = data["stock"][category]
     available = stock.get(size, 0)
 
@@ -151,19 +158,20 @@ def remove_manual(user_id: int, category: str, size: str, qty: int) -> dict:
     stock[size] -= qty
     data["history"].append({
         "date":     _now(),
+        "by":       by_name,
         "type":     "remove",
         "category": category,
         "size":     size,
         "qty":      qty,
     })
-    _save(user_id, data)
+    _save(data)
     return {"ok": True}
 
 
 # ─── Текст остатков ───────────────────────────────────────────────────────────
 
-def get_stock_text(user_id: int) -> str:
-    stock = load(user_id)["stock"]
+def get_stock_text(user_id: int = 0) -> str:
+    stock = load()["stock"]
     lines = ["📦 <b>Текущие остатки:</b>\n"]
 
     lines.append("<b>Подложки:</b>")
@@ -171,7 +179,7 @@ def get_stock_text(user_id: int) -> str:
         mark = "⚠️" if qty == 0 else ""
         lines.append(f"  • {size}см — {qty} шт {mark}".rstrip())
 
-    lines.append("\n<b>Коробки:</b>")
+    lines.append("\n<b>Коробки (торт):</b>")
     for size, qty in stock["boxes"].items():
         mark = "⚠️" if qty == 0 else ""
         lines.append(f"  • {size}см — {qty} шт {mark}".rstrip())
@@ -181,13 +189,18 @@ def get_stock_text(user_id: int) -> str:
         mark = "⚠️" if qty == 0 else ""
         lines.append(f"  • {size} — {qty} шт {mark}".rstrip())
 
+    lines.append("\n<b>Коробки капкейк/трайфл:</b>")
+    for size, qty in stock["cupcake_boxes"].items():
+        mark = "⚠️" if qty == 0 else ""
+        lines.append(f"  • {size} — {qty} шт {mark}".rstrip())
+
     return "\n".join(lines)
 
 
 # ─── Текст истории ────────────────────────────────────────────────────────────
 
-def get_history_text(user_id: int, limit: int = 20) -> str:
-    history = load(user_id)["history"]
+def get_history_text(user_id: int = 0, limit: int = 20) -> str:
+    history = load()["history"]
     if not history:
         return "История пуста."
 
@@ -196,37 +209,37 @@ def get_history_text(user_id: int, limit: int = 20) -> str:
 
     for entry in reversed(recent):
         date = entry["date"]
+        who  = f" [{entry['by']}]" if entry.get("by") else ""
         if entry["type"] == "income":
             cat  = CATEGORY_NAMES.get(entry["category"], entry["category"])
             size = entry["size"]
             qty  = entry["qty"]
-            unit = "см" if entry["category"] != "packages" else ""
-            lines.append(f"➕ <b>{date}</b>\n    Приход: {cat} {size}{unit} × {qty} шт")
+            unit = "см" if entry["category"] not in ("packages", "cupcake_boxes") else ""
+            lines.append(f"➕ <b>{date}</b>{who}\n    Приход: {cat} {size}{unit} × {qty} шт")
         elif entry["type"] == "expense":
             d = entry["cake_diameter"]
-            lines.append(f"➖ <b>{date}</b>\n    Расход: торт {d}см")
+            lines.append(f"➖ <b>{date}</b>{who}\n    Расход: торт {d}см")
             for item in entry["items"]:
                 cat  = CATEGORY_NAMES.get(item["category"], item["category"])
-                unit = "см" if item["category"] != "packages" else ""
+                unit = "см" if item["category"] not in ("packages", "cupcake_boxes") else ""
                 lines.append(f"        · {cat} {item['size']}{unit}")
         elif entry["type"] == "expense_cupcake":
-            lines.append(f"➖ <b>{date}</b>\n    Расход: капкейки/трайфлы\n        · Коробка {entry['box_size']}")
+            lines.append(f"➖ <b>{date}</b>{who}\n    Расход: капкейки/трайфлы\n        · Коробка {entry['box_size']}")
         elif entry["type"] == "remove":
             cat  = CATEGORY_NAMES.get(entry["category"], entry["category"])
             size = entry["size"]
             qty  = entry["qty"]
-            unit = "см" if entry["category"] != "packages" else ""
-            lines.append(f"🗑 <b>{date}</b>\n    Удаление: {cat} {size}{unit} × {qty} шт")
+            unit = "см" if entry["category"] not in ("packages", "cupcake_boxes") else ""
+            lines.append(f"🗑 <b>{date}</b>{who}\n    Удаление: {cat} {size}{unit} × {qty} шт")
         lines.append("")
 
     return "\n".join(lines).strip()
 
 
-# ─── Проверка низких остатков ──────────────────────────────────────────────────────
+# ─── Проверка низких остатков ─────────────────────────────────────────────────
 
-def get_low_stock_warnings(user_id: int) -> list[str]:
-    """Возвращает список позиций, у которых остаток ниже порога."""
-    stock = load(user_id)["stock"]
+def get_low_stock_warnings(user_id: int = 0) -> list[str]:
+    stock = load()["stock"]
     warnings: list[str] = []
     for category, threshold in LOW_STOCK_THRESHOLDS.items():
         cat_stock = stock.get(category, {})
@@ -239,14 +252,7 @@ def get_low_stock_warnings(user_id: int) -> list[str]:
 
 
 def get_all_user_ids() -> list[int]:
-    """Возвращает ID всех пользователей, у которых есть данные."""
-    if not os.path.exists(DATA_DIR):
-        return []
-    ids = []
-    for fname in os.listdir(DATA_DIR):
-        if fname.endswith(".json"):
-            try:
-                ids.append(int(fname[:-5]))
-            except ValueError:
-                pass
-    return ids
+    """Возвращает ID всех пользователей из ALLOWED_USERS (для ежедневных уведомлений)."""
+    from config import ALLOWED_USERS
+    return list(ALLOWED_USERS)
+
