@@ -1,5 +1,8 @@
 import os
+from pathlib import Path
 from dotenv import load_dotenv
+
+_BASE_DIR = Path(__file__).parent
 
 load_dotenv()
 
@@ -37,10 +40,10 @@ PACKAGE_SIZES: list[str] = ["20x20", "25x25"]
 CUPCAKE_BOX_SIZES: list[str] = ["4шт", "6шт"]
 
 # ─── Папка с данными ───────────────────────────────────────────────────────────
-DATA_DIR: str = "data"
+DATA_DIR: str = str(_BASE_DIR / "data")
 
 # Общий файл склада — единый для всех пользователей
-SHARED_STOCK_FILE: str = "data/shared_stock.json"
+SHARED_STOCK_FILE: str = str(_BASE_DIR / "data" / "shared_stock.json")
 
 # ─── Пороги остатков для уведомлений (на каждую позицию внутри категории) ────────
 LOW_STOCK_THRESHOLDS: dict[str, int] = {
