@@ -33,28 +33,22 @@ def load() -> dict:
 
     stock = data.setdefault("stock", {})
 
-    # Подложки и коробки (торт) — синхронизация диаметров из конфига
+    # Подложки и коробки (торт) — только добавляем новые размеры из конфига,
+    # существующие остатки никогда не удаляем и не обнуляем
     for cat in ("substrates", "boxes"):
         cat_stock = stock.setdefault(cat, {})
-        expected  = {str(d) for d in SUPPLY_DIAMETERS}
-        for d in expected:
-            cat_stock.setdefault(d, 0)
-        for d in [k for k in cat_stock if k not in expected]:
-            del cat_stock[d]
+        for d in SUPPLY_DIAMETERS:
+            cat_stock.setdefault(str(d), 0)
 
     # Пакеты
     pkg = stock.setdefault("packages", {})
     for s in PACKAGE_SIZES:
         pkg.setdefault(s, 0)
-    for s in [k for k in pkg if k not in PACKAGE_SIZES]:
-        del pkg[s]
 
     # Коробки капкейк/трайфл
     cpk = stock.setdefault("cupcake_boxes", {})
     for s in CUPCAKE_BOX_SIZES:
         cpk.setdefault(s, 0)
-    for s in [k for k in cpk if k not in CUPCAKE_BOX_SIZES]:
-        del cpk[s]
 
     data.setdefault("history", [])
     return data
