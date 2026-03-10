@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import os
+from datetime import datetime, timedelta, timezone
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
@@ -16,7 +18,11 @@ from aiogram.types import (
 
 import storage
 from config import (
+    ALLOWED_USERS,
     BOT_TOKEN,
+    CUPCAKE_BOX_SIZES,
+    DAILY_CHECK_HOUR,
+    DAILY_CHECK_MINUTE,
     GREETINGS,
     HISTORY_LIMIT,
     PACKAGE_MAPPING,
@@ -35,8 +41,37 @@ dp  = Dispatcher(storage=MemoryStorage())
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-# FSM States
+# Middleware: доступ только для пользователей из белого списка
 # ════════════════════════════════════════════════════════════════════════════════
+
+from aiogram import BaseMiddleware
+from aiogram.types import TelegramObject
+from typing import Any, Awaitable, Callable
+
+class AccessMiddleware(BaseMiddleware):
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        user = data.get("event_from_user")
+        if user is None or user.id not in ALLOWED_USERS:
+            # Получаем объект для ответа
+            msg = getattr(event, "message", None) or getattr(event, "callback_query", None)
+            if msg:
+                target = getattr(msg, "message", msg)
+                try:
+                    await target.answer(
+                        "🔒 Это приватный бот. Доступ ограничен — обратитесь к владельцу."
+                    )
+                except Exception:
+                    pass
+            return  # прерываем обработку
+        return await handler(event, data)
+
+dp.message.middleware(AccessMiddleware())
+dp.callback_query.middleware(AccessMiddleware())
 
 class IncomeStates(StatesGroup):
     choose_category = State()
@@ -45,6 +80,9 @@ class IncomeStates(StatesGroup):
 
 class ExpenseStates(StatesGroup):
     enter_diameter = State()
+
+class ExpenseCupcakeStates(StatesGroup):
+    choose_size = State()
 
 class RemoveStates(StatesGroup):
     choose_category = State()
@@ -58,11 +96,12 @@ class RemoveStates(StatesGroup):
 
 def kb_main() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Приход",        callback_data="income")],
-        [InlineKeyboardButton(text="➖ Расход (торт)", callback_data="expense")],
-        [InlineKeyboardButton(text="� Удалить вручную",  callback_data="remove")],
-        [InlineKeyboardButton(text="�📦 Остатки",       callback_data="stock")],
-        [InlineKeyboardButton(text="📋 История",       callback_data="history")],
+        [InlineKeyboardButton(text="➕ Приход",              callback_data="income")],
+        [InlineKeyboardButton(text="➖ Расход (торт)",     callback_data="expense")],
+        [InlineKeyboardButton(text="🟣 Расход (капкейки/трайфлы)", callback_data="expense_cupcake")],
+        [InlineKeyboardButton(text="🗑 Удалить вручную",      callback_data="remove")],
+        [InlineKeyboardButton(text="📦 Остатки",           callback_data="stock")],
+        [InlineKeyboardButton(text="📋 История",           callback_data="history")],
     ])
 
 
@@ -74,18 +113,20 @@ def kb_back_main() -> InlineKeyboardMarkup:
 
 def kb_income_category() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🟦 Подложки",  callback_data="cat:substrates")],
-        [InlineKeyboardButton(text="📦 Коробки",   callback_data="cat:boxes")],
-        [InlineKeyboardButton(text="🛍 Пакеты",    callback_data="cat:packages")],
-        [InlineKeyboardButton(text="◀️ Назад",     callback_data="back_main")],
+        [InlineKeyboardButton(text="🔷 Подложки",               callback_data="cat:substrates")],
+        [InlineKeyboardButton(text="📦 Коробки (торт)",        callback_data="cat:boxes")],
+        [InlineKeyboardButton(text="🛍 Пакеты",                callback_data="cat:packages")],
+        [InlineKeyboardButton(text="💜 Коробки капкейк/трайфл", callback_data="cat:cupcake_boxes")],
+        [InlineKeyboardButton(text="◀️ Назад",              callback_data="back_main")],
     ])
 
 def kb_remove_category() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔷 Подложки",  callback_data="rmcat:substrates")],
-        [InlineKeyboardButton(text="📦 Коробки",   callback_data="rmcat:boxes")],
-        [InlineKeyboardButton(text="🛍 Пакеты",    callback_data="rmcat:packages")],
-        [InlineKeyboardButton(text="◀️ Назад",     callback_data="back_main")],
+        [InlineKeyboardButton(text="🔷 Подложки",               callback_data="rmcat:substrates")],
+        [InlineKeyboardButton(text="📦 Коробки (торт)",        callback_data="rmcat:boxes")],
+        [InlineKeyboardButton(text="🛍 Пакеты",                callback_data="rmcat:packages")],
+        [InlineKeyboardButton(text="💜 Коробки капкейк/трайфл", callback_data="rmcat:cupcake_boxes")],
+        [InlineKeyboardButton(text="◀️ Назад",              callback_data="back_main")],
     ])
 
 
@@ -94,6 +135,11 @@ def kb_remove_size(category: str) -> InlineKeyboardMarkup:
         rows = [
             [InlineKeyboardButton(text=s, callback_data=f"rmsize:{s}")]
             for s in PACKAGE_SIZES
+        ]
+    elif category == "cupcake_boxes":
+        rows = [
+            [InlineKeyboardButton(text=s, callback_data=f"rmsize:{s}")]
+            for s in CUPCAKE_BOX_SIZES
         ]
     else:
         rows = [
@@ -109,6 +155,11 @@ def kb_size(category: str) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text=s, callback_data=f"size:{s}")]
             for s in PACKAGE_SIZES
         ]
+    elif category == "cupcake_boxes":
+        rows = [
+            [InlineKeyboardButton(text=s, callback_data=f"size:{s}")]
+            for s in CUPCAKE_BOX_SIZES
+        ]
     else:
         rows = [
             [InlineKeyboardButton(text=f"{d} см", callback_data=f"size:{d}")]
@@ -123,15 +174,17 @@ def kb_size(category: str) -> InlineKeyboardMarkup:
 # ════════════════════════════════════════════════════════════════════════════════
 
 CATEGORY_LABELS = {
-    "substrates": "подложки",
-    "boxes":      "коробки",
-    "packages":   "пакета",
+    "substrates":    "подложки",
+    "boxes":         "коробки",
+    "packages":      "пакета",
+    "cupcake_boxes": "коробки капкейк/трайфл",
 }
 
 CATEGORY_LABELS_TITLE = {
-    "substrates": "Подложки",
-    "boxes":      "Коробки",
-    "packages":   "Пакеты",
+    "substrates":    "Подложки",
+    "boxes":         "Коробки",
+    "packages":      "Пакеты",
+    "cupcake_boxes": "Коробки капкейк/трайфл",
 }
 
 
@@ -142,6 +195,36 @@ async def _edit_or_send(obj: CallbackQuery | Message, text: str,
         await obj.message.edit_text(text, reply_markup=markup)
     else:
         await obj.answer(text, reply_markup=markup)
+
+
+async def _send_low_stock_warning(user_id: int) -> None:
+    """Отправляет уведомление о низких остатках, если они есть."""
+    warnings = storage.get_low_stock_warnings(user_id)
+    if not warnings:
+        return
+    lines = "\n".join(f"  · {w}" for w in warnings)
+    try:
+        await bot.send_message(
+            user_id,
+            f"⚠️ <b>Мало на складе!</b>\n\n{lines}",
+        )
+    except Exception as e:
+        logging.warning("Не удалось отправить уведомление %s: %s", user_id, e)
+
+
+async def _daily_reminder_task() -> None:
+    """Ежедневно в DAILY_CHECK_HOUR:DAILY_CHECK_MINUTE МСК шлёт напоминания всем пользователям."""
+    MSK = timezone(timedelta(hours=3))
+    while True:
+        now    = datetime.now(MSK)
+        target = now.replace(hour=DAILY_CHECK_HOUR, minute=DAILY_CHECK_MINUTE,
+                             second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        await asyncio.sleep((target - now).total_seconds())
+        logging.info("Ежедневная проверка остатков")
+        for uid in storage.get_all_user_ids():
+            await _send_low_stock_warning(uid)
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -262,7 +345,7 @@ async def msg_income_save(message: Message, state: FSMContext) -> None:
     await state.clear()
 
     label = CATEGORY_LABELS_TITLE.get(category, category)
-    unit  = "см" if category != "packages" else ""
+    unit  = "см" if category not in ("packages", "cupcake_boxes") else ""
     await message.answer(
         f"✅ <b>Приход записан</b>\n{label} {size}{unit} — +{qty} шт",
         reply_markup=kb_main(),
@@ -339,6 +422,7 @@ async def msg_expense_process(message: Message, state: FSMContext) -> None:
         f"  · Пакет {package_size}   — 1 шт",
         reply_markup=kb_main(),
     )
+    await _send_low_stock_warning(message.from_user.id)
 
 
 @dp.callback_query(F.data == "back_remove_category")
@@ -422,20 +506,72 @@ async def msg_remove_save(message: Message, state: FSMContext) -> None:
         return
 
     label = CATEGORY_LABELS_TITLE.get(category, category)
-    unit  = "см" if category != "packages" else ""
+    unit  = "см" if category not in ("packages", "cupcake_boxes") else ""
     await message.answer(
         f"🗑 <b>Удалено</b>\n{label} {size}{unit} — −{qty} шт",
         reply_markup=kb_main(),
     )
+    await _send_low_stock_warning(message.from_user.id)
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# Расход капкейки/трайфлы — выбор размера коробки
+# ════════════════════════════════════════════════════════════════════════════════
+
+def kb_cupcake_size() -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text=f"🟣 {s}", callback_data=f"cupcake_size:{s}")]
+        for s in CUPCAKE_BOX_SIZES
+    ]
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="back_main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@dp.callback_query(F.data == "expense_cupcake")
+async def cb_expense_cupcake_start(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.set_state(ExpenseCupcakeStates.choose_size)
+    await callback.message.edit_text(
+        "🟣 Выберите размер коробки для капкейков/трайфлов:",
+        reply_markup=kb_cupcake_size(),
+    )
+
+
+@dp.callback_query(ExpenseCupcakeStates.choose_size, F.data.startswith("cupcake_size:"))
+async def cb_expense_cupcake_confirm(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    box_size = callback.data.split(":", 1)[1]
+    result = storage.add_expense_cupcake(callback.from_user.id, box_size)
+    await state.clear()
+
+    if not result["ok"]:
+        shortages = "\n".join(f"  · {s}" for s in result["shortages"])
+        await callback.message.edit_text(
+            f"❌ <b>Недостаточно на складе:</b>\n{shortages}",
+            reply_markup=kb_main(),
+        )
+        return
+
+    await callback.message.edit_text(
+        f"✅ <b>Расход записан — капкейки/трайфлы</b>\n\nСписано:\n  · Коробка {box_size} — 1 шт",
+        reply_markup=kb_main(),
+    )
+    await _send_low_stock_warning(callback.from_user.id)
 
 
 # ════════════════════════════════════════════════════════════════════════════════
 # Запуск
 # ════════════════════════════════════════════════════════════════════════════════
 
+async def _on_startup() -> None:
+    asyncio.create_task(_daily_reminder_task())
+    logging.info("Ежедневный планировщик запущен")
+
+
 async def main() -> None:
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN не задан. Проверьте файл .env")
+    dp.startup.register(_on_startup)
     logging.info("Бот запущен")
     await dp.start_polling(bot)
 
