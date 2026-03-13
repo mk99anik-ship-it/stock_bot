@@ -166,20 +166,28 @@ def remove_manual(user_id: int, category: str, size: str, qty: int, by_name: str
 
 def get_stock_text(user_id: int = 0) -> str:
     stock = load()["stock"]
+    # Показываем только размеры из текущего конфига (устаревшие скрыты)
+    active_diameters = {str(d) for d in SUPPLY_DIAMETERS}
     lines = ["📦 <b>Текущие остатки:</b>\n"]
 
     lines.append("<b>Подложки:</b>")
     for size, qty in stock["substrates"].items():
+        if size not in active_diameters:
+            continue
         mark = "⚠️" if qty == 0 else ""
         lines.append(f"  • {size}см — {qty} шт {mark}".rstrip())
 
     lines.append("\n<b>Коробки (торт):</b>")
     for size, qty in stock["boxes"].items():
+        if size not in active_diameters:
+            continue
         mark = "⚠️" if qty == 0 else ""
         lines.append(f"  • {size}см — {qty} шт {mark}".rstrip())
 
     lines.append("\n<b>Пакеты:</b>")
     for size, qty in stock["packages"].items():
+        if size not in PACKAGE_SIZES:
+            continue
         mark = "⚠️" if qty == 0 else ""
         lines.append(f"  • {size} — {qty} шт {mark}".rstrip())
 
@@ -234,10 +242,18 @@ def get_history_text(user_id: int = 0, limit: int = 20) -> str:
 
 def get_low_stock_warnings(user_id: int = 0) -> list[str]:
     stock = load()["stock"]
+    active_diameters = {str(d) for d in SUPPLY_DIAMETERS}
     warnings: list[str] = []
     for category, threshold in LOW_STOCK_THRESHOLDS.items():
         cat_stock = stock.get(category, {})
         for size, qty in cat_stock.items():
+            # Пропускаем устаревшие размеры
+            if category in ("substrates", "boxes") and size not in active_diameters:
+                continue
+            if category == "packages" and size not in PACKAGE_SIZES:
+                continue
+            if category == "cupcake_boxes" and size not in CUPCAKE_BOX_SIZES:
+                continue
             if qty < threshold:
                 label = CATEGORY_NAMES.get(category, category)
                 unit  = "см" if category not in ("packages", "cupcake_boxes") else ""
